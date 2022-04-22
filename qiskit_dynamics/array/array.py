@@ -19,8 +19,8 @@ from numbers import Number
 
 import numpy
 from numpy.lib.mixins import NDArrayOperatorsMixin
-
-from qiskit_dynamics.dispatch.dispatch import Dispatch, asarray
+from arraylias import AliasError, LibraryError
+from qiskit_dynamics.dispatch.dispatch import ALIAS, asarray
 
 __all__ = ["Array"]
 
@@ -31,6 +31,9 @@ class Array(NDArrayOperatorsMixin):
     This class provides a Numpy compatible wrapper to supported Python
     array libraries. Supported backends are 'numpy' and 'jax'.
     """
+
+    _DEFAULT_BACKEND = None
+    _WRAP_TYPES = tuple(i for i in ALIAS.registered_types() if not issubclass(i, Number))
 
     def __init__(
         self,
@@ -82,8 +85,10 @@ class Array(NDArrayOperatorsMixin):
             return
 
         # Standard init
+        backend = backend or self._DEFAULT_BACKEND
         self._data = asarray(data, dtype=dtype, order=order, backend=backend)
-        self._backend = backend if backend else Dispatch.backend(self._data, subclass=True)
+        libs = ALIAS.infer_libs(self._data)
+        self._backend = libs[0]
 
     @property
     def data(self):
@@ -103,7 +108,7 @@ class Array(NDArrayOperatorsMixin):
     @backend.setter
     def backend(self, value: str):
         """Set the backend of the wrapped array class"""
-        Dispatch.validate_backend(value)
+        self._validate_backend(value)
         self._data = asarray(self._data, backend=value)
         self._backend = value
 
@@ -111,26 +116,41 @@ class Array(NDArrayOperatorsMixin):
     def set_default_backend(cls, backend: Union[str, None]):
         """Set the default array backend."""
         if backend is not None:
-            Dispatch.validate_backend(backend)
-        Dispatch.DEFAULT_BACKEND = backend
+            cls._validate_backend(backend)
+        cls._DEFAULT_BACKEND = backend
 
     @classmethod
     def default_backend(cls) -> str:
         """Return the default array backend."""
-        return Dispatch.DEFAULT_BACKEND
+        return cls._DEFAULT_BACKEND
 
     @classmethod
     def available_backends(cls) -> Set[str]:
         """Return a tuple of available array backends"""
-        return Dispatch.REGISTERED_BACKENDS
+        return set(ALIAS.registed_libs())
 
     def __repr__(self):
         prefix = "Array("
-        if self._backend == Dispatch.DEFAULT_BACKEND:
+        if self._backend == self._DEFAULT_BACKEND:
             suffix = ")"
         else:
             suffix = f"backend='{self._backend}')"
-        return Dispatch.repr(self.backend)(self._data, prefix=prefix, suffix=suffix)
+        max_line_width = numpy.get_printoptions()["linewidth"]
+        array_str = numpy.array2string(
+            numpy.asarray(self._data),
+            separator=", ",
+            prefix=prefix,
+            suffix="," if suffix else None,
+            max_line_width=max_line_width,
+        )
+        sep = ""
+        if len(suffix) > 1:
+            last_line_width = len(array_str) - array_str.rfind("\n") + 1
+            if last_line_width + len(suffix) + 1 > max_line_width:
+                sep = ",\n" + " " * len(prefix)
+            else:
+                sep = ", "
+        return prefix + array_str + sep + suffix
 
     def __copy__(self):
         """Return a shallow copy referencing the same wrapped data array"""
@@ -160,7 +180,7 @@ class Array(NDArrayOperatorsMixin):
 
     def __setattr__(self, name: str, value: any):
         """Set attribute of wrapped array."""
-        if name in ("_data", "data", "_backend", "backend"):
+        if name in ("_data", "data", "_backend", "backend", "_DEFAULT_BACKEND"):
             super().__setattr__(name, value)
         else:
             setattr(self._data, name, value)
@@ -203,20 +223,14 @@ class Array(NDArrayOperatorsMixin):
 
     def __int__(self):
         """Convert size 1 array to an int."""
-        if numpy.size(self) != 1:
-            raise TypeError("only size-1 Arrays can be converted to Python scalars")
         return int(self._data)
 
     def __float__(self):
         """Convert size 1 array to a float."""
-        if numpy.size(self) != 1:
-            raise TypeError("only size-1 Arrays can be converted to Python scalars")
         return float(self._data)
 
     def __complex__(self):
         """Convert size 1 array to a complex."""
-        if numpy.size(self) != 1:
-            raise TypeError("only size-1 Arrays can be converted to Python scalars")
         return complex(self._data)
 
     @staticmethod
@@ -224,10 +238,10 @@ class Array(NDArrayOperatorsMixin):
         """Wrap return array backend objects as Array objects"""
         if isinstance(obj, tuple):
             return tuple(
-                Array(x, backend=backend) if isinstance(x, Dispatch.REGISTERED_TYPES) else x
+                Array(x, backend=backend) if isinstance(x, Array._WRAP_TYPES) else x
                 for x in obj
             )
-        if isinstance(obj, Dispatch.REGISTERED_TYPES):
+        if isinstance(obj, Array._WRAP_TYPES):
             return Array(obj, backend=backend)
         return obj
 
@@ -244,38 +258,33 @@ class Array(NDArrayOperatorsMixin):
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
         """Dispatcher for numpy ufuncs to support the wrapped array backend."""
+        if method != "__call__":
+            return NotImplemented
         out = kwargs.get("out", tuple())
-
         for i in inputs + out:
             # Only support operations with instances of REGISTERED_TYPES.
             # Use ArrayLike instead of type(self) for isinstance to
             # allow subclasses that don't override __array_ufunc__ to
             # handle ArrayLike objects.
-            if not isinstance(i, Dispatch.REGISTERED_TYPES + (Array, Number)):
+            if not isinstance(i, ALIAS.registered_types() + (Array, Number)) and not ALIAS.infer_libs(i):
                 return NotImplemented
 
         # Defer to the implementation of the ufunc on unwrapped values.
         inputs = self._unwrap(inputs)
         if out:
             kwargs["out"] = self._unwrap(out)
-
-        # Get implementation for backend
-        backend = self.backend
-        dispatch_func = Dispatch.array_ufunc(backend, ufunc, method)
-        if dispatch_func == NotImplemented:
+        try:
+            dispatch_func = ALIAS(ufunc.__name__, like=self._backend)
+        except AliasError:
             return NotImplemented
-        result = dispatch_func(*inputs, **kwargs)
-
-        # Not sure what this case from Numpy docs is?
-        if method == "at":
-            return None
 
         # Wrap array results back into Array objects
+        result = dispatch_func(*inputs, **kwargs)
         return self._wrap(result, backend=self.backend)
 
     def __array_function__(self, func, types, args, kwargs):
         """Dispatcher for numpy array function to support the wrapped array backend."""
-        if not all(issubclass(t, (Array,) + Dispatch.REGISTERED_TYPES) for t in types):
+        if not all(issubclass(t, (Array,) + ALIAS.registered_types()) for t in types):
             return NotImplemented
 
         # Unwrap function Array arguments
@@ -285,16 +294,33 @@ class Array(NDArrayOperatorsMixin):
             kwargs["out"] = self._unwrap(out)
 
         # Get implementation for backend
-        backend = self.backend
-        dispatch_func = Dispatch.array_function(backend, func)
-        if dispatch_func == NotImplemented:
+        try:
+            _, path = ALIAS._split_lib_from_path(f"{func.__module__}.{func.__name__}")
+            dispatch_func = ALIAS(path, like=self._backend)
+        except AliasError:
             return NotImplemented
         result = dispatch_func(*args, **kwargs)
         return self._wrap(result, backend=self.backend)
 
+    @classmethod
+    def _validate_backend(cls, backend: str):
+        """Raise an exception if backend is not registered.
+
+        Args:
+            backend: array backend name.
+
+        Raises:
+            DispatchError: if backend is not registered.
+        """
+        if backend not in ALIAS.registered_libs():
+            raise LibraryError(
+                f"""'{backend}' is not a registered array library
+                (registered library: {ALIAS.registered_libs()})"""
+            )
+
 
 def _is_numpy_backend(backend: Optional[str] = None):
-    return backend == "numpy" or (not backend and Dispatch.DEFAULT_BACKEND == "numpy")
+    return backend == "numpy" or (not backend and Array._DEFAULT_BACKEND == "numpy")
 
 
 def _is_equivalent_numpy_array(data: any, dtype: Optional[any] = None, order: Optional[str] = None):

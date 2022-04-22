@@ -38,6 +38,3 @@ from .dispatch import (
     asarray,
     requires_backend,
 )
-
-# Register backends
-from .backends import *

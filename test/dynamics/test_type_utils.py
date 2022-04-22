@@ -341,11 +341,11 @@ class Test_to_array(QiskitDynamicsTestCase):
         op_arr = [Operator.from_label(s) for s in "XYZ"]
         single_op = op_arr[0]
         list_of_arrays = [Array(op) for op in list_of_ops]
-        assert isinstance(to_array(numpy_ops), np.ndarray)
-        assert isinstance(to_array(normal_array), Array)
-        assert isinstance(to_array(op_arr), np.ndarray)
-        assert isinstance(to_array(single_op), np.ndarray)
-        assert isinstance(to_array(list_of_arrays), np.ndarray)
+        self.assertIsInstance(to_array(numpy_ops), np.ndarray)
+        self.assertIsInstance(to_array(normal_array), Array)
+        self.assertIsInstance(to_array(op_arr), np.ndarray)
+        self.assertIsInstance(to_array(single_op), np.ndarray)
+        self.assertIsInstance(to_array(list_of_arrays), np.ndarray)
 
 
 class Test_to_array_Jax(Test_to_array, TestJaxBase):
@@ -359,11 +359,11 @@ class Test_to_array_Jax(Test_to_array, TestJaxBase):
         op_arr = [Operator.from_label(s) for s in "XYZ"]
         single_op = op_arr[0]
         list_of_arrays = [Array(op) for op in list_of_ops]
-        assert isinstance(to_array(numpy_ops), Array)
-        assert isinstance(to_array(normal_array), Array)
-        assert isinstance(to_array(op_arr), Array)
-        assert isinstance(to_array(single_op), Array)
-        assert isinstance(to_array(list_of_arrays), Array)
+        self.assertIsInstance(to_array(numpy_ops), Array)
+        self.assertIsInstance(to_array(normal_array), Array)
+        self.assertIsInstance(to_array(op_arr), Array)
+        self.assertIsInstance(to_array(single_op), Array)
+        self.assertIsInstance(to_array(list_of_arrays), Array)
 
     def test_to_array_BCOO(self):
         """Convert BCOO type to array."""
